@@ -1,0 +1,218 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+
+# ----------------------------
+# 기본 설정
+# ----------------------------
+st.set_page_config(
+    page_title="서울, 100년의 기온 변화",
+    page_icon="🌡️",
+    layout="wide",
+)
+
+DATA_URL = "https://raw.githubusercontent.com/greatsong/modudata/main/data/seoul.csv"
+
+
+@st.cache_data
+def load_data():
+    df = pd.read_csv(DATA_URL)
+    df["날짜"] = pd.to_datetime(df["날짜"])
+    df["연도"] = df["날짜"].dt.year
+    return df
+
+
+@st.cache_data
+def get_yearly_avg(df):
+    # 자료가 부족한(관측일수가 매우 적은) 연도는 제외해서 왜곡을 줄임
+    counts = df.groupby("연도")["평균기온"].count()
+    valid_years = counts[counts >= 300].index  # 1년치 데이터가 충분한 연도만 사용
+
+    yearly = (
+        df[df["연도"].isin(valid_years)]
+        .groupby("연도")
+        .agg(
+            연평균기온=("평균기온", "mean"),
+            연평균최저기온=("최저기온", "mean"),
+            연평균최고기온=("최고기온", "mean"),
+        )
+        .reset_index()
+    )
+    return yearly
+
+
+# ----------------------------
+# 데이터 로드
+# ----------------------------
+with st.spinner("서울의 기온 데이터를 불러오는 중이에요..."):
+    raw_df = load_data()
+    yearly_df = get_yearly_avg(raw_df)
+
+# ----------------------------
+# 헤더
+# ----------------------------
+st.title("🌡️ 서울, 100년의 기온 변화")
+st.markdown(
+    "서울 기상 관측 데이터를 이용해서, **연평균 기온이 지난 100여 년간 "
+    "어떻게 변해왔는지** 한눈에 살펴보는 페이지예요."
+)
+
+min_year = int(yearly_df["연도"].min())
+max_year = int(yearly_df["연도"].max())
+
+st.caption(f"데이터 기간: {min_year}년 ~ {max_year}년 (서울 관측소, 지점번호 108)")
+
+# ----------------------------
+# 기간 선택
+# ----------------------------
+st.subheader("📅 살펴볼 기간을 골라보세요")
+
+default_start = max(min_year, max_year - 99)  # 최근 100년 기본 선택
+start_year, end_year = st.slider(
+    "연도 범위",
+    min_value=min_year,
+    max_value=max_year,
+    value=(default_start, max_year),
+    step=1,
+)
+
+view_df = yearly_df[(yearly_df["연도"] >= start_year) & (yearly_df["연도"] <= end_year)].copy()
+
+# ----------------------------
+# 핵심 지표 (한눈에 보기)
+# ----------------------------
+if len(view_df) >= 2:
+    first_val = view_df.iloc[0]["연평균기온"]
+    last_val = view_df.iloc[-1]["연평균기온"]
+    change = last_val - first_val
+
+    hottest_row = view_df.loc[view_df["연평균기온"].idxmax()]
+    coldest_row = view_df.loc[view_df["연평균기온"].idxmin()]
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric(
+        f"{int(view_df.iloc[0]['연도'])}년 연평균",
+        f"{first_val:.1f} °C",
+    )
+    col2.metric(
+        f"{int(view_df.iloc[-1]['연도'])}년 연평균",
+        f"{last_val:.1f} °C",
+        f"{change:+.1f} °C",
+    )
+    col3.metric(
+        "가장 더웠던 해",
+        f"{int(hottest_row['연도'])}년",
+        f"{hottest_row['연평균기온']:.1f} °C",
+    )
+    col4.metric(
+        "가장 추웠던 해",
+        f"{int(coldest_row['연도'])}년",
+        f"{coldest_row['연평균기온']:.1f} °C",
+    )
+
+    if change > 0:
+        st.info(
+            f"📈 선택한 기간 동안 서울의 연평균 기온은 약 **{change:.1f}°C 상승**했어요."
+        )
+    elif change < 0:
+        st.info(
+            f"📉 선택한 기간 동안 서울의 연평균 기온은 약 **{abs(change):.1f}°C 하락**했어요."
+        )
+    else:
+        st.info("선택한 기간 동안 연평균 기온은 큰 변화가 없었어요.")
+
+st.divider()
+
+# ----------------------------
+# 메인 그래프
+# ----------------------------
+st.subheader("📊 연평균 기온 변화 그래프")
+
+show_range = st.checkbox("최고·최저 기온 범위도 함께 보기", value=False)
+show_trend = st.checkbox("전체 추세선 보기 (선형 회귀)", value=True)
+
+fig = go.Figure()
+
+if show_range:
+    fig.add_trace(
+        go.Scatter(
+            x=view_df["연도"],
+            y=view_df["연평균최고기온"],
+            line=dict(width=0),
+            showlegend=False,
+            hoverinfo="skip",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=view_df["연도"],
+            y=view_df["연평균최저기온"],
+            fill="tonexty",
+            fillcolor="rgba(255,140,0,0.15)",
+            line=dict(width=0),
+            name="최저~최고 범위",
+            hoverinfo="skip",
+        )
+    )
+
+fig.add_trace(
+    go.Scatter(
+        x=view_df["연도"],
+        y=view_df["연평균기온"],
+        mode="lines+markers",
+        name="연평균 기온",
+        line=dict(color="#d1495b", width=3),
+        marker=dict(size=5),
+        hovertemplate="%{x}년<br>연평균 %{y:.1f}°C<extra></extra>",
+    )
+)
+
+if show_trend and len(view_df) >= 2:
+    z = np.polyfit(view_df["연도"], view_df["연평균기온"], 1)
+    trend_line = np.poly1d(z)
+    fig.add_trace(
+        go.Scatter(
+            x=view_df["연도"],
+            y=trend_line(view_df["연도"]),
+            mode="lines",
+            name="추세선",
+            line=dict(color="#264653", width=2, dash="dash"),
+            hoverinfo="skip",
+        )
+    )
+    st.caption(
+        f"📐 추세선 기준, 연평균 기온은 **10년마다 약 {z[0]*10:.2f}°C** 변화하는 흐름을 보여요."
+    )
+
+fig.update_layout(
+    xaxis_title="연도",
+    yaxis_title="연평균 기온 (°C)",
+    hovermode="x unified",
+    height=520,
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    margin=dict(l=10, r=10, t=30, b=10),
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+st.divider()
+
+# ----------------------------
+# 원본 데이터 보기 (선택)
+# ----------------------------
+with st.expander("🔍 연도별 평균 기온 표 보기"):
+    st.dataframe(
+        view_df.rename(
+            columns={
+                "연도": "연도",
+                "연평균기온": "연평균 기온(°C)",
+                "연평균최저기온": "연평균 최저기온(°C)",
+                "연평균최고기온": "연평균 최고기온(°C)",
+            }
+        ).round(1),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+st.caption("데이터 출처: 기상청 서울(108) 지점 일별 기온 자료")
